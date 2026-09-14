@@ -36,7 +36,7 @@ export async function routeAndAnswerQuery(
 
   // 1. Explicit Student Domain
   if (domain === 'student') {
-    const studentRes = await handleStudentDatabaseQuery(query, apiKey);
+    const studentRes = await handleStudentDatabaseQuery(query, apiKey, rawQuery);
     response = {
       ...studentRes,
       domainUsed: 'student',
@@ -55,7 +55,7 @@ export async function routeAndAnswerQuery(
     const isSchoolTopic = isStudentQuery(query) || isStudentQuery(rawQuery);
 
     if (isSchoolTopic) {
-      const studentRes = await handleStudentDatabaseQuery(query, apiKey);
+      const studentRes = await handleStudentDatabaseQuery(query, apiKey, rawQuery);
       response = {
         ...studentRes,
         domainUsed: 'student',

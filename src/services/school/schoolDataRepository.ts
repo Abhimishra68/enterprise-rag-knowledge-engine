@@ -1,4 +1,12 @@
 import { StudentProfile } from '../../types/school';
+import { vectorStore } from '../rag/vectorStore';
+
+function getApiUrl(endpoint: string): string {
+  if (typeof window !== 'undefined' && window.location && window.location.origin) {
+    return endpoint;
+  }
+  return `http://localhost:5173${endpoint}`;
+}
 
 export interface DatabaseStatus {
   connected: boolean;
@@ -93,7 +101,7 @@ export class SchoolDataRepository {
    */
   public async checkStatus(): Promise<DatabaseStatus> {
     try {
-      const res = await fetch('/api/database/status');
+      const res = await fetch(getApiUrl('/api/database/status'));
       if (res.ok) {
         const data: DatabaseStatus = await res.json();
         this.dbStatus = data;
@@ -122,7 +130,7 @@ export class SchoolDataRepository {
     password?: string;
   }): Promise<{ success: boolean; status?: DatabaseStatus; error?: string }> {
     try {
-      const res = await fetch('/api/database/config', {
+      const res = await fetch(getApiUrl('/api/database/config'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
@@ -148,7 +156,7 @@ export class SchoolDataRepository {
     isFallback?: boolean;
   }> {
     try {
-      const res = await fetch('/api/database/students');
+      const res = await fetch(getApiUrl('/api/database/students'));
       if (!res.ok) {
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson.error || `HTTP ${res.status}`);
@@ -162,6 +170,11 @@ export class SchoolDataRepository {
         this.dbStatus.connected = true;
         this.dbStatus.tablesExist = true;
         this.dbStatus.studentCount = this.students.length;
+
+        // Auto-sanitize vector store to purge any obsolete/mock student chunks
+        const activeIds = this.students.map(s => s.studentId);
+        vectorStore.sanitizeStaleStudentChunks(activeIds);
+
         this.notifyListeners();
         return {
           success: true,

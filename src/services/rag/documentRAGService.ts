@@ -12,10 +12,26 @@ export interface DocumentRAGResponse {
 }
 
 /**
- * Returns only chunks belonging to user-uploaded documents (excluding school student dossiers).
+ * Determines whether a chunk belongs to a School Student Database record / dossier.
+ */
+export function isStudentChunk(chunk: TextChunk): boolean {
+  if (chunk.docId && (chunk.docId.startsWith('doc_STU_') || chunk.docId.startsWith('doc_stu_'))) {
+    return true;
+  }
+  if (chunk.docName && /student[_\s]dossier|student[_\s]record/i.test(chunk.docName)) {
+    return true;
+  }
+  if (chunk.content && /STUDENT DOSSIER & ACADEMIC SUMMARY|ROLL NUMBER:\s*R-\d+|GUARDIAN & PARENT CONTACT/i.test(chunk.content)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Returns only chunks belonging to user-uploaded documents (strictly excluding school student dossiers).
  */
 function getUploadedDocumentChunks(): TextChunk[] {
-  return vectorStore.getAllChunks().filter(c => !c.docId.startsWith('doc_STU_'));
+  return vectorStore.getAllChunks().filter(c => !isStudentChunk(c));
 }
 
 /**
@@ -126,7 +142,7 @@ export async function handleDocumentRAGQuery(
   const allResults = vectorStore.search(queryVector, query, topK * 2, hybridAlpha);
   // Filter out any student dossiers to preserve strict document isolation
   const docResults = allResults
-    .filter(r => !r.chunk.docId.startsWith('doc_STU_'))
+    .filter(r => !isStudentChunk(r.chunk))
     .slice(0, topK);
   const searchTime = (performance.now() - searchStart).toFixed(1);
 

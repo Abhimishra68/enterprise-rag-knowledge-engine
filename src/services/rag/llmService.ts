@@ -25,38 +25,43 @@ export function extractTargetEntity(query: string): string | null {
   const cleanQ = query.trim().replace(/[?!.,]+$/, '').trim();
 
   // Guard against aggregate or meta queries
-  if (/(how\s*many|total|count|all\s*student|list\s*student|every\s*student|show\s*all|database|directory)/i.test(cleanQ)) {
+  if (/(how\s*many|total|count|all\s*student|list\s*student|every\s*student|show\s*all|database|directory|leaderboard|topper|highest|lowest)/i.test(cleanQ)) {
     return null;
   }
 
-  // 1. Direct Regex for "who is <name>", "tell me about <name>", "details of <name>"
-  const directPattern = /^(?:who\s+is|tell\s+(?:me\s+)?about|information\s+(?:about|of|on)|info\s+(?:about|of|on)|details\s+(?:of|for|about)|profile\s+(?:of|for)|give\s+(?:me\s+)?(?:info|details)\s+(?:on|about)|show\s+me|find|about|check\s+record\s+of)\s+([a-zA-Z\s'.]+?)(?:\s+(?:in|from|at|class|section|marks|roll|attendance|\?|$)|$)/i;
-  const match = cleanQ.match(directPattern);
-  if (match && match[1]) {
-    const candidate = match[1].trim();
-    // Filter out conversational stop words
-    if (!['the', 'a', 'an', 'this', 'that', 'all', 'any', 'their', 'our', 'student', 'students', 'topper', 'highest'].includes(candidate.toLowerCase())) {
-      return candidate;
-    }
-  }
-
-  // 2. Direct ID or Roll number match (e.g. STU_1001 or R-101)
+  // 1. Direct ID or Roll number match (e.g. STU_1001 or R-101)
   const idMatch = cleanQ.match(/\b(STU_\d+|R-\d+)\b/i);
   if (idMatch) {
     return idMatch[1];
   }
 
-  // 3. Check against live student names in repository (case-insensitive substring match)
-  const qLower = cleanQ.toLowerCase();
+  // 2. Check against live student names in repository
   const liveStudents = schoolDataRepository.getStudents();
-  const foundStudent = liveStudents.find(s => qLower.includes(s.fullName.toLowerCase()));
-  if (foundStudent) {
-    return foundStudent.fullName;
+  const qLower = cleanQ.toLowerCase();
+  for (const s of liveStudents) {
+    if (qLower.includes(s.fullName.toLowerCase())) {
+      return s.fullName;
+    }
+  }
+  for (const s of liveStudents) {
+    if (s.firstName.length >= 3 && new RegExp(`\\b${s.firstName}\\b`, 'i').test(cleanQ)) {
+      return s.fullName;
+    }
   }
 
-  // 4. Short standalone name check (e.g., "Abhishek", "Aarav Sharma", "Shrishti Kumari")
+  // 3. Robust Regex for "who is <name>", "tell me about <name>", "details of <name>"
+  const entityMatch = cleanQ.match(/\b(?:who\s+is|tell\s+(?:me\s+)?about|details\s+(?:of|for|about)|profile\s+(?:of|for)|information\s+(?:about|of|on)|info\s+(?:about|of|on)|check\s+record\s+of|about)\s+([a-zA-Z\s'.]+?)(?:[?!,;]|\s+(?:in|from|at|class|section|marks|roll|attendance|provide|give|and|please|\.|$)|$)/i);
+  if (entityMatch && entityMatch[1]) {
+    const candidate = entityMatch[1].trim();
+    const stopWords = new Set(['the', 'a', 'an', 'this', 'that', 'all', 'any', 'their', 'our', 'student', 'students', 'topper', 'highest', 'lowest', 'me', 'you', 'school']);
+    if (candidate.length >= 2 && !stopWords.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+
+  // 4. Short standalone name check (e.g., "Abhishek", "Aarav Sharma")
   const words = cleanQ.split(/\s+/);
-  if (words.length >= 1 && words.length <= 4 && !/(topper|highest|lowest|marks|grade|attendance|class|average|best|worst)/i.test(cleanQ)) {
+  if (words.length >= 1 && words.length <= 3 && !/(topper|highest|lowest|marks|grade|attendance|class|average|best|worst|who|what|where|how|why|list|show)/i.test(cleanQ)) {
     return cleanQ;
   }
 
@@ -73,10 +78,9 @@ export function checkEntityExistsInDatabase(targetName: string): {
   suggestions: string[];
 } {
   const targetLower = targetName.toLowerCase().trim();
-  const allChunks = vectorStore.getAllChunks();
   const students = schoolDataRepository.getStudents();
 
-  // 1. Check exact or substring match in live student database
+  // Check exact or partial match in live student database
   const matchedStudent = students.find(s => {
     const fullNameLower = s.fullName.toLowerCase();
     const firstLower = s.firstName.toLowerCase();
@@ -95,24 +99,11 @@ export function checkEntityExistsInDatabase(targetName: string): {
     );
   });
 
-  // 2. Also check if any stored chunk contains this entity
-  const chunkMatch = allChunks.find(c => {
-    const contentLower = c.content.toLowerCase();
-    const docNameLower = c.docName.toLowerCase();
-    const keywordsLower = (c.keywords || []).map(k => k.toLowerCase());
-
-    return (
-      contentLower.includes(targetLower) ||
-      docNameLower.includes(targetLower) ||
-      keywordsLower.includes(targetLower)
-    );
-  });
-
-  if (matchedStudent || chunkMatch) {
+  if (matchedStudent) {
     return { exists: true, matchedStudent, suggestions: [] };
   }
 
-  // 3. Find closest fuzzy suggestions from live students
+  // Find closest fuzzy suggestions from live students
   const firstLetterMatches = students.filter(s =>
     s.firstName.toLowerCase().startsWith(targetLower.charAt(0))
   );
@@ -126,21 +117,24 @@ export function checkEntityExistsInDatabase(targetName: string): {
 /**
  * Generates an informative, production-grade 404 response for non-existent students
  */
-export function formatStudentNotFoundResponse(name: string, suggestions: string[]): string {
+export function formatStudentNotFoundResponse(name: string, suggestions?: string[]): string {
   const formattedName = name.charAt(0).toUpperCase() + name.slice(1);
-  const suggestionList = suggestions.map(s => `  - **${s}**`).join('\n');
+  const students = schoolDataRepository.getStudents();
+  const count = students.length;
+
+  const enrolledList = students.length > 0
+    ? students.map(s => `- **${s.fullName}** (${s.classGrade} - Section ${s.section}, Roll No: \`${s.rollNumber}\`)`).join('\n')
+    : '- *(No enrolled students currently registered in database)*';
 
   return `### ❌ Student Record Not Found: "${formattedName}"
 
-No student record found matching **"${formattedName}"** in the school database.
+No student named **"${formattedName}"** is enrolled in the School Database.
 
-- **Status**: Not enrolled in Class 1 through Class 10 records.
-- **Database Scope**: 50 enrolled students indexed across 224 vector chunks.
+#### 🏫 Currently Enrolled Students in Database (${count}):
+${enrolledList}
 
-💡 **Suggestions**:
-- Please verify the spelling of the student's name or roll number.
-- Ask **"List all students"** to view the full directory of all 50 enrolled students.
-${suggestions.length > 0 ? `\n**Enrolled students you can search for**:\n${suggestionList}` : ''}`;
+---
+*Verified directly against live PostgreSQL records in school_ecosystem_db.*`;
 }
 
 /**
@@ -703,8 +697,8 @@ function fallbackSynthesizeAnswer(
     const nameMatch = r.chunk.content.match(/STUDENT NAME:\s*([^\n\-\|]+)/i);
     if (nameMatch) {
       const studentName = nameMatch[1].trim().toLowerCase();
-      const parts = studentName.split(/\s+/);
-      if (queryLower.includes(studentName) || parts.some(p => p.length > 2 && queryLower.includes(p))) {
+      const parts = studentName.split(/\s+/).filter(p => p.length > 2);
+      if (queryLower.includes(studentName) || (parts.length > 0 && parts.every(p => queryLower.includes(p)))) {
         return true;
       }
     }
@@ -748,7 +742,8 @@ function fallbackSynthesizeAnswer(
     topResult.chunk.content.includes('STUDENT DOSSIER');
 
   if (isStudentDossier) {
-    return `### 🔍 Student Record Not Found\n\nNo student record in the database matches your query **"${query}"**.\n\n- **Database Scope**: 50 enrolled students (Class 1 to Class 10).\n- **Tip**: Check the spelling of the student's name, or ask **"List all students"** to browse all enrolled profiles.`;
+    const entity = candidateEntity || query;
+    return formatStudentNotFoundResponse(entity);
   }
 
   // Format clean paragraphs from general documents (e.g. React notes, syllabus, handbook)

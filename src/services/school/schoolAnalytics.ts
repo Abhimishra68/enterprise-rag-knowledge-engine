@@ -280,8 +280,8 @@ export function detectAndExecuteSchoolAnalytics(query: string): AnalyticsResult 
   const isMarksQuery = /\b(marks|score|scores|percentage|grade|grades|scorer|performer|scoring|scored)\b/i.test(q);
   const isAttendanceQuery = /\b(attendance|present|presence|sessions|regular|absent)\b/i.test(q);
 
-  // Guard against single-student queries (e.g. "tell me about Aarav Verma")
-  if (/\b(tell\s+me\s+about|details\s+of|profile\s+of|who\s+is\s+[a-z]+\s+[a-z]+)\b/i.test(q) && !isHighest && !isLowest) {
+  // Guard against single-student queries (e.g. "tell me about Abhishek", "who is Shrishti", "details of Aarav")
+  if (/\b(?:tell\s+(?:me\s+)?about|details\s+(?:of|for|about)|profile\s+(?:of|for)|who\s+is|record\s+of)\s+[a-zA-Z]/i.test(q) && !isHighest && !isLowest && !/\b(topper|rank|leaderboard)\b/i.test(q)) {
     return null;
   }
 
@@ -306,8 +306,11 @@ export function detectAndExecuteSchoolAnalytics(query: string): AnalyticsResult 
     }
   }
 
-  // Case 2: Attendance Queries (e.g. "best attendance", "lowest attendance")
-  if (isAttendanceQuery) {
+  // Case 2: Attendance Ranking Queries (requires comparative/leaderboard intent, e.g. "best attendance", "lowest attendance", "attendance leaderboard")
+  const isAttendanceRankingQuery = (isHighest || isLowest || /\b(leaderboard|ranking|standings?|rates?|best|worst|top|bottom)\b/i.test(q)) &&
+    /\b(attendance|present|presence|sessions)\b/i.test(q);
+
+  if (isAttendanceRankingQuery) {
     return handleAttendanceRanking(isLowest);
   }
 

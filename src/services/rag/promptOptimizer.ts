@@ -24,7 +24,8 @@ REWRITE RULES:
 1. Entity Resolution:
    - If user asks about a first name like "Shrishti", "Aarav", "Ananya", "Mafiya", expand to their full enrolled name (e.g. "Shrishti kumari", "Aarav Verma", "Ananya Patel", "Mafiya Mundir").
 2. Query Clarification:
-   - "who is Shrishti" -> "Who is Shrishti kumari? Provide student profile, academic marks, and attendance details."
+   - "who is Shrishti" or "tell me about Shrishti" -> "Who is Shrishti kumari? Provide student profile, academic marks, and attendance details."
+   - "tell me about Abhishek" or "who is Abhishek" -> "Who is Abhishek? Provide student profile, academic marks, and attendance details."
    - "marks Shrishti" -> "What are the examination marks and scores of Shrishti kumari?"
    - "who contains more marks in LLB" -> "Who scored the highest marks in LLB?"
    - "who contains more marks in math" -> "Who scored the highest marks in Mathematics?"
@@ -33,7 +34,7 @@ REWRITE RULES:
    - "attendance Aarav" -> "What is the attendance record of Aarav Verma?"
    - "summarize notes" -> "Summarize the key information from the uploaded documents."
 3. Strict Fidelity:
-   - PRESERVE the user's intent. If user asks about an unregistered subject like "LLB" or "Law", do NOT substitute it with a valid subject; keep "LLB" so the database validator can inform the user.
+   - PRESERVE the user's intent. If user asks about an unregistered subject like "LLB" or an unlisted person like "Abhishek", do NOT substitute it with a different entity; keep the exact name/term so the database validator can check it against live records.
 4. Output Format:
    - Output ONLY the rewritten query text.
    - Do NOT add conversational preamble, quotes, bullet points, or explanations.
@@ -65,11 +66,11 @@ export function optimizeQueryLocally(rawQuery: string): string {
     }
   }
 
-  // 2. Add clarifying intent for short "who is <Name>" queries
-  const whoIsMatch = optimized.match(/^who\s+is\s+([a-zA-Z\s'.]+)$/i);
-  if (whoIsMatch && whoIsMatch[1]) {
-    const name = whoIsMatch[1].trim();
-    if (!['the', 'a', 'topper', 'student'].includes(name.toLowerCase())) {
+  // 2. Add clarifying intent for short "who is <Name>" or "tell me about <Name>" queries
+  const personMatch = optimized.match(/^(?:who\s+is|tell\s+(?:me\s+)?about|details\s+(?:of|for|about)|profile\s+(?:of|for))\s+([a-zA-Z\s'.]+)$/i);
+  if (personMatch && personMatch[1]) {
+    const name = personMatch[1].trim();
+    if (!['the', 'a', 'an', 'topper', 'student', 'students', 'all', 'any'].includes(name.toLowerCase())) {
       optimized = `Who is ${name}? Provide student profile, academic marks, and attendance details.`;
     }
   }

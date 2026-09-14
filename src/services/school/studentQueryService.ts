@@ -28,7 +28,8 @@ export function isStudentQuery(query: string): boolean {
     /\b(school\s*database|student\s*list|all\s*students?|directory)\b/i,
     /\b(guardian|father\s*name|mother\s*name|parent\s*contact|teacher\s*comments)\b/i,
     /\b(stu_\d+|r-\d+)\b/i,
-    /\bwho\s+(?:contains|has|have|got|scored)\b/i
+    /\bwho\s+(?:contains|has|have|got|scored)\b/i,
+    /\b(?:who\s+is|tell\s+(?:me\s+)?about|profile\s+of|details\s+of|information\s+about|info\s+about|record\s+of)\b/i
   ];
 
   for (const pattern of studentKeywords) {
@@ -44,8 +45,8 @@ export function isStudentQuery(query: string): boolean {
     if (q.includes(s.studentId.toLowerCase())) return true;
   }
 
-  // 3. Name-focused question patterns like "who is <X>", "tell me about <X>"
-  if (/^(?:who\s+is|tell\s+(?:me\s+)?about|details\s+(?:of|for|about)|profile\s+(?:of|for))\s+[a-zA-Z\s'.]+$/i.test(q)) {
+  // 3. Name-focused question patterns
+  if (/\b(?:who\s+is|tell\s+(?:me\s+)?about|details\s+(?:of|for|about)|profile\s+(?:of|for)|about)\s+[a-zA-Z]/i.test(q)) {
     return true;
   }
 
@@ -59,16 +60,22 @@ export function extractStudentEntity(query: string): string | null {
   const cleanQ = query.trim().replace(/[?!.,]+$/, '').trim();
 
   // Guard against aggregate or meta queries
-  if (/(how\s*many|total|count|all\s*student|list\s*student|every\s*student|show\s*all|database|directory)/i.test(cleanQ)) {
+  if (/(how\s*many|total|count|all\s*student|list\s*student|every\s*student|show\s*all|database|directory|leaderboard|topper|highest|lowest)/i.test(cleanQ)) {
     return null;
   }
 
-  // 1. Check if any enrolled student's full name is in the query
+  // 1. Check if any enrolled student's full name or first name is in the query
   const liveStudents = schoolDataRepository.getStudents();
   const qLower = cleanQ.toLowerCase();
-  const nameMatch = liveStudents.find(s => qLower.includes(s.fullName.toLowerCase()));
-  if (nameMatch) {
-    return nameMatch.fullName;
+  for (const s of liveStudents) {
+    if (qLower.includes(s.fullName.toLowerCase())) {
+      return s.fullName;
+    }
+  }
+  for (const s of liveStudents) {
+    if (s.firstName.length >= 3 && new RegExp(`\\b${s.firstName}\\b`, 'i').test(cleanQ)) {
+      return s.fullName;
+    }
   }
 
   // 2. Direct ID or Roll number match (e.g. STU_1001 or R-101)
@@ -77,19 +84,19 @@ export function extractStudentEntity(query: string): string | null {
     return idMatch[1];
   }
 
-  // 3. Prefix extraction ("Who is <Name>", "Tell me about <Name>")
-  const prefixRegex = /^(?:who\s+is|tell\s+(?:me\s+)?about|information\s+(?:about|of|on)|info\s+(?:about|of|on)|details\s+(?:of|for|about)|profile\s+(?:of|for)|give\s+(?:me\s+)?(?:info|details)\s+(?:on|about)|show\s+me|find|about|check\s+record\s+of)\s+([a-zA-Z\s'.]+?)(?:\s+(?:in|from|at|class|section|marks|roll|attendance|\?|$)|$)/i;
-  const match = cleanQ.match(prefixRegex);
-  if (match && match[1]) {
-    const candidate = match[1].trim();
-    if (!['the', 'a', 'an', 'this', 'that', 'all', 'any', 'their', 'our', 'student', 'students', 'topper', 'highest', 'lowest'].includes(candidate.toLowerCase())) {
+  // 3. Robust Regex for "who is <name>", "tell me about <name>", "details of <name>", "profile of <name>"
+  const entityMatch = cleanQ.match(/\b(?:who\s+is|tell\s+(?:me\s+)?about|details\s+(?:of|for|about)|profile\s+(?:of|for)|information\s+(?:about|of|on)|info\s+(?:about|of|on)|check\s+record\s+of|about)\s+([a-zA-Z\s'.]+?)(?:[?!,;]|\s+(?:in|from|at|class|section|marks|roll|attendance|provide|give|and|please|\.|$)|$)/i);
+  if (entityMatch && entityMatch[1]) {
+    const candidate = entityMatch[1].trim();
+    const stopWords = new Set(['the', 'a', 'an', 'this', 'that', 'all', 'any', 'their', 'our', 'student', 'students', 'topper', 'highest', 'lowest', 'me', 'you', 'school']);
+    if (candidate.length >= 2 && !stopWords.has(candidate.toLowerCase())) {
       return candidate;
     }
   }
 
   // 4. Standalone name (1-3 words)
   const words = cleanQ.split(/\s+/);
-  if (words.length >= 1 && words.length <= 3 && !/(topper|highest|lowest|marks|grade|attendance|class|average|best|worst)/i.test(cleanQ)) {
+  if (words.length >= 1 && words.length <= 3 && !/(topper|highest|lowest|marks|grade|attendance|class|average|best|worst|who|what|where|how|why|list|show)/i.test(cleanQ)) {
     return cleanQ;
   }
 
@@ -190,20 +197,24 @@ ${marksRows}
 /**
  * Formats a clean 404 response for non-existent students.
  */
-export function formatStudentNotFoundMarkdown(name: string, suggestions: string[]): string {
+export function formatStudentNotFoundMarkdown(name: string, suggestions?: string[]): string {
   const formattedName = name.charAt(0).toUpperCase() + name.slice(1);
-  const suggestionList = suggestions.map(s => `  - **${s}**`).join('\n');
-  const count = schoolDataRepository.getStudentCount();
+  const students = schoolDataRepository.getStudents();
+  const count = students.length;
+
+  const enrolledList = students.length > 0
+    ? students.map(s => `- **${s.fullName}** (${s.classGrade} - Section ${s.section}, Roll No: \`${s.rollNumber}\`)`).join('\n')
+    : '- *(No enrolled students currently registered in database)*';
 
   return `### ❌ Student Record Not Found: "${formattedName}"
 
-No student named **"${formattedName}"** exists in the School Database.
+No student named **"${formattedName}"** is enrolled in the School Database.
 
-#### 💡 Did you mean one of these enrolled students?
-${suggestionList}
+#### 🏫 Currently Enrolled Students in Database (${count}):
+${enrolledList}
 
 ---
-*Verified across all ${count} active records in the PostgreSQL School Database.*`;
+*Verified directly against live PostgreSQL records in school_ecosystem_db.*`;
 }
 
 /**
@@ -262,7 +273,8 @@ The School Database evaluates and tracks enrolled students across **6 core subje
  */
 export async function handleStudentDatabaseQuery(
   query: string,
-  apiKey?: string
+  apiKey?: string,
+  rawQuery?: string
 ): Promise<StudentQueryResponse> {
   const startTime = performance.now();
   const timestamp = Date.now();
@@ -468,47 +480,11 @@ export async function handleStudentDatabaseQuery(
     };
   }
 
-  // 2. Check for Comparative Analytics & Rankings (Highest Marks, Topper, Attendance)
-  const analytics = detectAndExecuteSchoolAnalytics(query);
-  if (analytics && analytics.isHandled) {
-    trackNetworkPhase('phase4-gemini-api-response', {
-      phase: 'Stage 7: Final LLM Generation',
-      status: 'SUCCESS_200',
-      engineUsed: 'PostgreSQL School Analytics Engine',
-      rawLLMResponse: analytics.markdownResponse
-    });
+  // 2. Check for Individual Student Entity Lookup ("Who is Shrishti Kumari", "Tell me about Abhishek")
+  const targetEntity = extractStudentEntity(query) || (rawQuery ? extractStudentEntity(rawQuery) : null);
+  const isExplicitRankingQuery = /\b(topper|highest|lowest|leaderboard|ranking|most\s+marks|more\s+marks)\b/i.test(query);
 
-    const pipelineInfo: PipelineStageInfo = {
-      timestamp,
-      query,
-      extractedDocCount: schoolDataRepository.getStudentCount(),
-      totalChunksInDB: schoolDataRepository.getStudentCount(),
-      queryVectorDimension: 0,
-      queryVectorSample: [],
-      retrievedResults: [],
-      constructedPrompt: `[ANALYTICS] ${analytics.title}: ${analytics.executiveSummary}`,
-      rawLLMResponse: analytics.markdownResponse,
-      engineUsed: 'PostgreSQL School Analytics Engine',
-      timings: {
-        embedMs: 0,
-        searchMs: 2,
-        llmMs: 0,
-        totalMs: Number((performance.now() - startTime).toFixed(1))
-      }
-    };
-
-    return {
-      answer: analytics.markdownResponse,
-      sources: [],
-      pipelineInfo,
-      isStudentQuery: true,
-      analyticsResult: analytics
-    };
-  }
-
-  // 3. Check for Individual Student Entity Lookup ("Who is Shrishti Kumari", "Tell me about Abhishek")
-  const targetEntity = extractStudentEntity(query);
-  if (targetEntity) {
+  if (targetEntity && !isExplicitRankingQuery) {
     const verification = verifyStudentInDatabase(targetEntity);
 
     // Case A: Student exists in database
@@ -586,6 +562,44 @@ export async function handleStudentDatabaseQuery(
       sources: [],
       pipelineInfo,
       isStudentQuery: true
+    };
+  }
+
+  // 3. Check for Comparative Analytics & Rankings (Highest Marks, Topper, Attendance)
+  const analytics = detectAndExecuteSchoolAnalytics(query);
+  if (analytics && analytics.isHandled) {
+    trackNetworkPhase('phase4-gemini-api-response', {
+      phase: 'Stage 7: Final LLM Generation',
+      status: 'SUCCESS_200',
+      engineUsed: 'PostgreSQL School Analytics Engine',
+      rawLLMResponse: analytics.markdownResponse
+    });
+
+    const pipelineInfo: PipelineStageInfo = {
+      timestamp,
+      query,
+      extractedDocCount: schoolDataRepository.getStudentCount(),
+      totalChunksInDB: schoolDataRepository.getStudentCount(),
+      queryVectorDimension: 0,
+      queryVectorSample: [],
+      retrievedResults: [],
+      constructedPrompt: `[ANALYTICS] ${analytics.title}: ${analytics.executiveSummary}`,
+      rawLLMResponse: analytics.markdownResponse,
+      engineUsed: 'PostgreSQL School Analytics Engine',
+      timings: {
+        embedMs: 0,
+        searchMs: 2,
+        llmMs: 0,
+        totalMs: Number((performance.now() - startTime).toFixed(1))
+      }
+    };
+
+    return {
+      answer: analytics.markdownResponse,
+      sources: [],
+      pipelineInfo,
+      isStudentQuery: true,
+      analyticsResult: analytics
     };
   }
 

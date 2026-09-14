@@ -150,6 +150,34 @@ const STOP_WORDS = new Set([
     return topResults;
   }
 
+  /**
+   * Purges any obsolete mock student chunks from memory and localStorage,
+   * keeping only verified active student records and user-uploaded documents.
+   */
+  public sanitizeStaleStudentChunks(activeStudentIds: string[]): void {
+    const activeSet = new Set(activeStudentIds.map(id => id.toUpperCase()));
+    const initialCount = this.chunks.length;
+
+    this.chunks = this.chunks.filter(c => {
+      const isStudent = (c.docId && (c.docId.startsWith('doc_STU_') || c.docId.startsWith('doc_stu_'))) ||
+        (c.docName && (c.docName.includes('Student_Dossier') || c.docName.includes('Student_Record')));
+
+      if (!isStudent) return true; // Retain user-uploaded documents
+
+      // Check student ID
+      const match = c.docId?.match(/doc_(STU_\d+)/i) || c.content?.match(/STUDENT ID:\s*(STU_\d+)/i);
+      if (match) {
+        return activeSet.has(match[1].toUpperCase());
+      }
+      return false;
+    });
+
+    if (this.chunks.length !== initialCount) {
+      console.log(`%c🧹 Purged ${initialCount - this.chunks.length} stale/obsolete student chunks from vector store.`, 'color: #10b981;');
+      this.saveToStorage();
+    }
+  }
+
   private saveToStorage(): void {
     try {
       localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.chunks));
@@ -162,7 +190,24 @@ const STOP_WORDS = new Set([
     try {
       const saved = localStorage.getItem(this.STORAGE_KEY);
       if (saved) {
-        this.chunks = JSON.parse(saved);
+        const loaded: TextChunk[] = JSON.parse(saved);
+        // Clean out legacy mock student chunks (e.g. STU_1005 to STU_1050)
+        // Only keep active students (STU_1001 through STU_1004) and user uploaded documents
+        const validStudentIds = new Set(['STU_1001', 'STU_1002', 'STU_1003', 'STU_1004']);
+        this.chunks = loaded.filter(c => {
+          const isStudent = (c.docId && (c.docId.startsWith('doc_STU_') || c.docId.startsWith('doc_stu_'))) ||
+            (c.docName && (c.docName.includes('Student_Dossier') || c.docName.includes('Student_Record')));
+
+          if (!isStudent) return true; // User documents always retained
+
+          const match = c.docId?.match(/doc_(STU_\d+)/i) || c.content?.match(/STUDENT ID:\s*(STU_\d+)/i);
+          if (match) {
+            return validStudentIds.has(match[1].toUpperCase());
+          }
+          return false;
+        });
+
+        this.saveToStorage();
       }
     } catch (e) {
       this.chunks = [];
