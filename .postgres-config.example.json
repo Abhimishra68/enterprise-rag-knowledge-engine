@@ -1,0 +1,7 @@
+{
+  "host": "localhost",
+  "port": 5432,
+  "database": "school_ecosystem_db",
+  "user": "postgres",
+  "password": "your_postgres_password"
+}
