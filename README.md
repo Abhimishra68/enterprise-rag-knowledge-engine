@@ -14,9 +14,16 @@
 
 ---
 
-## 🏛️ System Architecture
+## 🏛️ End-to-End System Architecture & Complete Flow
 
-![Enterprise Multi-Provider RAG Architecture](docs/screenshots/multi_provider_architecture.png)
+![Enterprise Multi-Provider RAG Architectural Pipeline Flow](docs/screenshots/complete_system_architecture_flow.png)
+
+> **Complete Inner Workflow:**
+> 1. **User Ingestion & Query Processing:** Conversational memory buffer, cross-turn pronoun resolution (*"her/his"* $\to$ entity), and LLM query reformulation.
+> 2. **Intelligent Dual-Domain Router:** Automatic classification separating structured queries (PostgreSQL / Supabase 100-student database) from unstructured document queries (PDF/TXT Vector Store).
+> 3. **7-Stage RAG Retrieval Pipeline:** In-browser PDF extraction, recursive sliding window chunking, dense vector embeddings, vector similarity search, BM25 hybrid ranking, and strict grounded prompt assembly.
+> 4. **Multi-Provider LLM Cascade & Self-Healing Failover:** Primary ultra-low latency inference via **Groq Cloud (Qwen 3.8 / Llama 3 @ 300ms)** with automated real-time failover to **Google Gemini 3.5 Flash Lite / Flash Latest** upon `HTTP 503 UNAVAILABLE` capacity spikes or `429` quota exhaustion.
+> 5. **Dynamic Synthesis & Output Generation:** Anti-hallucination grounding verification, STEM vs. Humanities delta math breakdowns, multi-student comparative audits, and source citation links.
 
 ---
 
