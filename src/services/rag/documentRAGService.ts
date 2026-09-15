@@ -1,5 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
-import { SearchResult, PipelineStageInfo, TextChunk } from '../../types/rag';
+import { SearchResult, PipelineStageInfo, TextChunk, ChatMessage } from '../../types/rag';
 import { generateEmbedding } from './embeddings';
 import { vectorStore } from './vectorStore';
 import { trackNetworkPhase } from './networkTelemetry';
@@ -35,30 +35,48 @@ function getUploadedDocumentChunks(): TextChunk[] {
 }
 
 /**
- * Constructs grounded context prompt strictly from user-uploaded document chunks.
+ * Constructs grounded context prompt strictly from user-uploaded document chunks with Claude/ChatGPT formatting standards.
  */
-function constructDocumentPrompt(query: string, results: SearchResult[]): string {
+function constructDocumentPrompt(query: string, results: SearchResult[], history?: ChatMessage[]): string {
   if (results.length === 0) {
     return `SYSTEM INSTRUCTION:
-No matching context was found in the user's uploaded documents for query "${query}".
-Politely state that the information was not found in the uploaded documents.`;
+You are an intelligent Document Assistant. No matching context was found in the user's uploaded documents for query "${query}".
+Politely state that the information was not found in the uploaded documents, and suggest what kind of documents the user could upload.`;
   }
 
   const contextBlocks = results
-    .map((res, i) => `[Document ${i + 1}: ${res.chunk.docName} | Page ${res.chunk.pageNumber}]\n${res.chunk.content}`)
-    .join('\n\n---\n\n');
+    .map((res, i) => `=== DOCUMENT EXCERPT ${i + 1} ===\nTitle: ${res.chunk.docName}\nPage: ${res.chunk.pageNumber}\nRelevance Score: ${(res.score * 100).toFixed(1)}%\nContent:\n${res.chunk.content}`)
+    .join('\n\n');
 
-  return `SYSTEM INSTRUCTION:
-You are an intelligent Document Assistant answering questions strictly based on the user's uploaded personal documents.
-Use ONLY the provided document context below. Do not invent facts or cite external information.
+  let historySnippet = '';
+  if (history && history.length > 0) {
+    historySnippet = `RECENT CONVERSATION HISTORY:\n${history.slice(-4).map(m => `${m.sender === 'user' ? 'User' : 'Assistant'}: ${m.text.substring(0, 300)}`).join('\n')}\n\n`;
+  }
 
-UPLOADED DOCUMENT CONTEXT:
+  return `You are an elite, highly intelligent Knowledge Assistant specialized in document synthesis, reasoning, and search.
+Your answers must match the clarity, analytical structure, and conversational flow of Claude 3.5 Sonnet and ChatGPT-4o.
+
+GROUNDED DOCUMENT EVIDENCE:
+==================================================
 ${contextBlocks}
+==================================================
 
-USER QUESTION:
-${query}
+${historySnippet}USER QUESTION:
+"${query}"
 
-ANSWER (Clear, well-structured, citing specific sections where appropriate):`;
+GENERATION GUIDELINES:
+1. DIRECT INTENT ADDRESSING:
+   - Provide a direct, articulate, and complete answer in the opening paragraph.
+   - Tailor the structure to the question:
+     * If asked for a summary: provide key high-level themes, followed by structured bullet points.
+     * If asked to compare or contrast concepts: provide a nuanced breakdown and a clear Markdown table.
+     * If asked for step-by-step guidance or definitions: present clean, numbered instructions or clear conceptual definitions.
+2. STRICT CITATION & GROUNDING:
+   - Rely strictly on facts, numbers, and statements from the GROUNDED DOCUMENT EVIDENCE above.
+   - When citing key statements, cite the document name and page number gracefully (e.g. *[Source: ${results[0]?.chunk?.docName || 'document'}, Page ${results[0]?.chunk?.pageNumber || 1}]*).
+   - If the uploaded documents do not contain the answer, explicitly state what is missing rather than fabricating details.
+3. TONE & POLISH:
+   - Professional, authoritative, and concise. Avoid repetitive conversational fluff.`;
 }
 
 /**
@@ -77,7 +95,12 @@ function fallbackDocumentSynthesizer(query: string, results: SearchResult[]): st
 
   const excerpt = paragraphs.slice(0, 3).join('\n\n');
 
-  return `### 📄 Information from **${topResult.chunk.docName}** (Page ${topResult.chunk.pageNumber})\n\n${excerpt || topResult.chunk.content.trim()}\n\n*Source: Grounded from uploaded file with ${(topResult.score * 100).toFixed(1)}% match confidence.*`;
+  return `### 📄 Insights from **${topResult.chunk.docName}** (Page ${topResult.chunk.pageNumber})
+
+${excerpt || topResult.chunk.content.trim()}
+
+---
+*Grounded from uploaded document with ${(topResult.score * 100).toFixed(1)}% match confidence.*`;
 }
 
 /**
@@ -88,7 +111,8 @@ export async function handleDocumentRAGQuery(
   query: string,
   apiKey?: string,
   topK: number = 4,
-  hybridAlpha: number = 0.7
+  hybridAlpha: number = 0.7,
+  history?: ChatMessage[]
 ): Promise<DocumentRAGResponse> {
   const pipelineStart = performance.now();
   const timestamp = Date.now();
@@ -162,12 +186,12 @@ export async function handleDocumentRAGQuery(
   });
 
   // 4. Construct Grounded Prompt
-  const promptContext = constructDocumentPrompt(query, docResults);
+  const promptContext = constructDocumentPrompt(query, docResults, history);
 
   trackNetworkPhase('phase3-gemini-prompt-payload', {
     phase: 'Stage 6: Grounded Document Prompt Construction',
     status: 'SUCCESS_200',
-    targetModel: 'gemini-2.5-flash',
+    targetModel: 'Gemini Multi-Model Cascade (3.5-flash-lite / flash-latest / 2.5-flash)',
     totalCharacters: promptContext.length
   });
 
@@ -179,22 +203,17 @@ export async function handleDocumentRAGQuery(
   const candidateKey = (apiKey && apiKey.trim().length > 5) ? apiKey : apiKeyPool.getActiveKey();
   if (candidateKey && candidateKey.trim().length > 5 && docResults.length > 0) {
     try {
-      const llmStart = performance.now();
-      const { result, keyUsed, failoverCount } = await apiKeyPool.executeWithKeyRotation(async (keyToUse) => {
-        const ai = new GoogleGenAI({ apiKey: keyToUse });
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: promptContext
-        });
-        return response.text || '';
-      }, candidateKey);
+      const { text, modelUsed, keyUsed, failoverCount, latencyMs } = await apiKeyPool.generateContentWithCascade(
+        { contents: promptContext },
+        { preferredKey: candidateKey }
+      );
 
-      llmTime = (performance.now() - llmStart).toFixed(1);
-      rawLLMResponse = result;
+      llmTime = String(latencyMs);
+      rawLLMResponse = text;
       const maskedKey = apiKeyPool.maskKey(keyUsed);
       engineUsed = failoverCount > 0
-        ? `Google Gemini 2.5 Flash (Auto-failover to ${maskedKey})`
-        : `Google Gemini 2.5 Flash (${maskedKey})`;
+        ? `Google ${modelUsed} (Auto-failover to ${maskedKey})`
+        : `Google ${modelUsed} (${maskedKey})`;
     } catch (err: any) {
       console.warn('Gemini API call failed, falling back to local synthesizer:', err);
       rawLLMResponse = fallbackDocumentSynthesizer(query, docResults);

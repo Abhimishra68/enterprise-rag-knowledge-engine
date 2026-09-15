@@ -155,12 +155,14 @@ export const App: React.FC = () => {
 
     try {
       const chosenDomain = domain || activeDomain;
+      const historyTurns = messages.slice(-6);
       const response = await routeAndAnswerQuery(
         query,
         chosenDomain,
         settings.geminiApiKey,
         settings.topK,
-        settings.hybridAlpha
+        settings.hybridAlpha,
+        historyTurns
       );
 
       setActivePipelineInfo(response.pipelineInfo);

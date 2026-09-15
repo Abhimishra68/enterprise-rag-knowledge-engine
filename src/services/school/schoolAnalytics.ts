@@ -159,12 +159,20 @@ export function extractSubjectCandidate(query: string): SubjectExtractionResult 
       'all', 'every', 'student', 'students', 'school', 'database', 'class',
       'section', 'here', 'there', 'attendance', 'sessions', 'overall', 'general',
       'both', 'each', 'this', 'that', 'our', 'their', 'the', 'a', 'an', 'me', 'us',
-      'exam', 'test', 'marks', 'score', 'grades', 'grade', 'percentage', 'session',
+      'exam', 'test', 'marks', 'score', 'scores', 'grades', 'grade', 'percentage', 'session',
       'sessions', 'record', 'records', 'details', 'detail', 'info', 'information',
-      'profile', 'list', 'show', 'give', 'tell', 'find', 'which', 'who', 'what'
+      'profile', 'list', 'show', 'give', 'tell', 'find', 'which', 'who', 'what',
+      'his', 'her', 'their', 'him', 'them', 'current', 'advice', 'guidance', 'improve',
+      'improving', 'better', 'good', 'bad', 'high', 'low', 'more', 'less', 'and', 'or',
+      'to', 'for', 'of', 'in', 'on', 'with', 'about', 'regarding', 'performance',
+      'academic', 'strengths', 'weaknesses', 'areas', 'evaluation', 'comments', 'would', 'you'
     ]);
 
+    // If whole candidate is an excluded word or consists entirely of common functional words, reject
     if (excludedWords.has(lower)) return null;
+    const tokens = lower.split(/\s+/).filter(Boolean);
+    if (tokens.every(t => excludedWords.has(t))) return null;
+    if (tokens.some(t => ['current', 'advice', 'guidance', 'improve', 'improving', 'better', 'would', 'you', 'his', 'her'].includes(t))) return null;
     if (/^(?:class\s*\d+|section\s*[abc])$/i.test(lower)) return null;
     return c;
   };

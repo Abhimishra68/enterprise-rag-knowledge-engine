@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { schoolDataRepository } from '../school/schoolDataRepository';
 import { apiKeyPool } from './apiKeyPool';
+import { ChatMessage } from '../../types/rag';
 
 export interface PromptOptimizationResult {
   optimizedQuery: string;
@@ -21,9 +22,13 @@ CURRENT APPLICATION CONTEXT:
    - Uploaded PDF/TXT study notes, user guides, policies, manuals.
 
 REWRITE RULES:
-1. Entity Resolution:
+1. Contextual Reference & Pronoun Resolution:
+   - If user uses pronouns ("she", "he", "her", "his", "their", "them", "that student", "the student") or follow-up references ("what about math?", "and in science?", "compare them"), inspect the RECENT CONVERSATION HISTORY and substitute the exact student name or entity referenced.
+   - Example: If previous turns discussed "Shrishti kumari", rewrite "What are her marks in math?" -> "What are Shrishti kumari's examination marks in Mathematics?"
+   - Example: If previous turn was "Who is Aarav Verma?", rewrite "Is he regular?" -> "What is the attendance record and regularity status of Aarav Verma?"
+2. Entity Resolution:
    - If user asks about a first name like "Shrishti", "Aarav", "Ananya", "Mafiya", expand to their full enrolled name (e.g. "Shrishti kumari", "Aarav Verma", "Ananya Patel", "Mafiya Mundir").
-2. Query Clarification:
+3. Query Clarification:
    - "who is Shrishti" or "tell me about Shrishti" -> "Who is Shrishti kumari? Provide student profile, academic marks, and attendance details."
    - "tell me about Abhishek" or "who is Abhishek" -> "Who is Abhishek? Provide student profile, academic marks, and attendance details."
    - "marks Shrishti" -> "What are the examination marks and scores of Shrishti kumari?"
@@ -33,9 +38,9 @@ REWRITE RULES:
    - "topper in sst" -> "Who is the top ranker with highest marks in Social Studies (SST)?"
    - "attendance Aarav" -> "What is the attendance record of Aarav Verma?"
    - "summarize notes" -> "Summarize the key information from the uploaded documents."
-3. Strict Fidelity:
+4. Strict Fidelity:
    - PRESERVE the user's intent. If user asks about an unregistered subject like "LLB" or an unlisted person like "Abhishek", do NOT substitute it with a different entity; keep the exact name/term so the database validator can check it against live records.
-4. Output Format:
+5. Output Format:
    - Output ONLY the rewritten query text.
    - Do NOT add conversational preamble, quotes, bullet points, or explanations.
    - Keep it concise, natural, and directly searchable.
@@ -44,14 +49,38 @@ REWRITE RULES:
 /**
  * Fast local heuristic fallback optimizer when Gemini API is unavailable or offline
  */
-export function optimizeQueryLocally(rawQuery: string): string {
+export function optimizeQueryLocally(rawQuery: string, history?: ChatMessage[]): string {
   const q = rawQuery.trim();
   if (!q) return rawQuery;
 
-  // 1. Partial student name resolution (e.g. "who is Shrishti" -> "Who is Shrishti kumari")
   const enrolledStudents = schoolDataRepository.getStudents();
   let optimized = q;
 
+  // 1. Contextual Pronoun Resolution from Chat History
+  const hasPronoun = /\b(she|he|her|his|him|their|them|that\s+student|the\s+student)\b/i.test(optimized);
+  if (hasPronoun && history && history.length > 0) {
+    // Scan history backwards to find most recently discussed student
+    let referencedStudent: string | null = null;
+    for (let i = history.length - 1; i >= 0; i--) {
+      const turnText = history[i].text.toLowerCase();
+      for (const s of enrolledStudents) {
+        if (turnText.includes(s.fullName.toLowerCase()) || turnText.includes(s.firstName.toLowerCase())) {
+          referencedStudent = s.fullName;
+          break;
+        }
+      }
+      if (referencedStudent) break;
+    }
+
+    if (referencedStudent) {
+      // Replace possessive pronouns: her/his/their -> [Student]'s
+      optimized = optimized.replace(/\b(her|his|their)\b/gi, `${referencedStudent}'s`);
+      // Replace subject/object pronouns: she/he/him/them/that student -> [Student]
+      optimized = optimized.replace(/\b(she|he|him|them|that\s+student|the\s+student)\b/gi, referencedStudent);
+    }
+  }
+
+  // 2. Partial student name resolution (e.g. "who is Shrishti" -> "Who is Shrishti kumari")
   for (const s of enrolledStudents) {
     const firstNameLower = s.firstName.toLowerCase();
     const fullNameLower = s.fullName.toLowerCase();
@@ -61,12 +90,11 @@ export function optimizeQueryLocally(rawQuery: string): string {
     const hasFullName = optimized.toLowerCase().includes(fullNameLower);
 
     if (hasFirstName && !hasFullName) {
-      // Replace first name with full name
       optimized = optimized.replace(new RegExp(`\\b${firstNameLower}\\b`, 'gi'), s.fullName);
     }
   }
 
-  // 2. Add clarifying intent for short "who is <Name>" or "tell me about <Name>" queries
+  // 3. Add clarifying intent for short "who is <Name>" or "tell me about <Name>" queries
   const personMatch = optimized.match(/^(?:who\s+is|tell\s+(?:me\s+)?about|details\s+(?:of|for|about)|profile\s+(?:of|for))\s+([a-zA-Z\s'.]+)$/i);
   if (personMatch && personMatch[1]) {
     const name = personMatch[1].trim();
@@ -75,7 +103,7 @@ export function optimizeQueryLocally(rawQuery: string): string {
     }
   }
 
-  // 3. Clarify shorthand class count queries (e.g. "how many student in class 8")
+  // 4. Clarify shorthand class count queries (e.g. "how many student in class 8")
   const classCountMatch = optimized.match(/^how\s+many\s+students?\s+in\s+(?:class|grade)?\s*(\d+)/i);
   if (classCountMatch && classCountMatch[1]) {
     optimized = `How many students are enrolled in Class ${classCountMatch[1]}?`;
@@ -90,7 +118,8 @@ export function optimizeQueryLocally(rawQuery: string): string {
  */
 export async function optimizeQueryWithGemini(
   rawQuery: string,
-  apiKey?: string
+  apiKey?: string,
+  history?: ChatMessage[]
 ): Promise<PromptOptimizationResult> {
   const trimmed = rawQuery.trim();
   if (!trimmed) {
@@ -106,22 +135,31 @@ export async function optimizeQueryWithGemini(
   const candidateKey = (apiKey && apiKey.trim().length > 5) ? apiKey : apiKeyPool.getActiveKey();
   if (candidateKey && candidateKey.trim().length > 5) {
     try {
-      const { result: text } = await apiKeyPool.executeWithKeyRotation(async (keyToUse) => {
-        const ai = new GoogleGenAI({ apiKey: keyToUse });
-        
-        // Enforce 3.5-second timeout so query optimization never blocks user
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Gemini prompt optimization timeout')), 3500)
-        );
+      let contextPrefix = '';
+      if (history && history.length > 0) {
+        const recentTurns = history.slice(-4)
+          .map(m => `${m.sender === 'user' ? 'User' : 'Assistant'}: ${m.text.substring(0, 200)}`)
+          .join('\n');
+        contextPrefix = `RECENT CONVERSATION HISTORY:\n${recentTurns}\n\n`;
+      }
 
-        const geminiCall = ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: `${OPTIMIZER_SYSTEM_INSTRUCTION}\n\nUSER PROMPT TO OPTIMIZE: "${trimmed}"`
-        });
+      // Enforce 3.5-second timeout so query optimization never blocks user
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Gemini prompt optimization timeout')), 3500)
+      );
 
-        const response = await Promise.race([geminiCall, timeoutPromise]) as any;
-        return response?.text?.trim()?.replace(/^["']|["']$/g, '') || '';
-      }, candidateKey);
+      const cascadeCall = apiKeyPool.generateContentWithCascade(
+        {
+          contents: `${OPTIMIZER_SYSTEM_INSTRUCTION}\n\n${contextPrefix}USER PROMPT TO OPTIMIZE: "${trimmed}"`
+        },
+        {
+          preferredKey: candidateKey,
+          candidateModels: ['gemini-3.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.5-flash']
+        }
+      );
+
+      const res = await Promise.race([cascadeCall, timeoutPromise]) as any;
+      const text = res?.text?.trim()?.replace(/^["']|["']$/g, '') || '';
 
       if (text && text.length >= 3 && !text.toLowerCase().includes('i cannot') && !text.toLowerCase().includes('as an ai')) {
         return {
@@ -137,7 +175,7 @@ export async function optimizeQueryWithGemini(
   }
 
   // 2. Fallback to local heuristic optimizer
-  const localOptimized = optimizeQueryLocally(trimmed);
+  const localOptimized = optimizeQueryLocally(trimmed, history);
   return {
     optimizedQuery: localOptimized,
     originalQuery: rawQuery,

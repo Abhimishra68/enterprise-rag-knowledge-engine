@@ -218,6 +218,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           {k.maskedKey}
                         </span>
 
+                        {/* Provider Badge */}
+                        {k.provider === 'groq' ? (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 tracking-wider">
+                            GROQ
+                          </span>
+                        ) : (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 tracking-wider">
+                            GEMINI
+                          </span>
+                        )}
+
                         {/* Status Badge */}
                         {isActive && (
                           <span className="text-[10px] font-semibold px-2 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 animate-pulse">

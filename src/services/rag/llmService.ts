@@ -1,5 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
-import { SearchResult, PipelineStageInfo } from '../../types/rag';
+import { SearchResult, PipelineStageInfo, ChatMessage } from '../../types/rag';
 import { generateEmbedding } from './embeddings';
 import { vectorStore } from './vectorStore';
 import { trackNetworkPhase } from './networkTelemetry';
@@ -9,6 +9,7 @@ import { convertStudentToDossier } from '../school/schoolRagAdapter';
 import { chunkDocument } from './chunker';
 import { detectAndExecuteSchoolAnalytics } from '../school/schoolAnalytics';
 import { apiKeyPool } from './apiKeyPool';
+import { generateLocalDynamicStudentAnswer } from '../school/studentQueryService';
 
 
 export interface AnswerResponse {
@@ -144,7 +145,8 @@ export async function answerQuestion(
   query: string,
   apiKey?: string,
   topK: number = 4,
-  hybridAlpha: number = 0.7
+  hybridAlpha: number = 0.7,
+  history?: ChatMessage[]
 ): Promise<AnswerResponse> {
   const pipelineStart = performance.now();
   const timestamp = Date.now();
@@ -405,7 +407,7 @@ export async function answerQuestion(
 
   // 3. Construct Grounded Prompt with retrieved context (Stage 6)
   console.log('%c━━━ STEP 3: Constructing Grounded Prompt (Stage 6) ━━━', 'color: #4338ca;');
-  const promptContext = constructPrompt(query, retrievedResults);
+  const promptContext = constructPrompt(query, retrievedResults, history);
   console.group('%c📄 CONSTRUCTED PROMPT (sent to LLM):', 'color: #f59e0b; font-weight: bold;');
   console.log(promptContext);
   console.groupEnd();
@@ -431,26 +433,21 @@ export async function answerQuestion(
   const candidateKey = (apiKey && apiKey.trim().length > 5) ? apiKey : apiKeyPool.getActiveKey();
   if (candidateKey && candidateKey.trim().length > 5 && retrievedResults.length > 0) {
     try {
-      console.log('%c🤖 Calling Gemini 2.5 Flash API with Key Pool Rotation...', 'color: #60a5fa; font-weight: bold;');
-      const llmStart = performance.now();
+      console.log('%c🤖 Calling Gemini Multi-Model Cascade with Key Pool Rotation...', 'color: #60a5fa; font-weight: bold;');
       
-      const { result, keyUsed, failoverCount } = await apiKeyPool.executeWithKeyRotation(async (keyToUse) => {
-        const ai = new GoogleGenAI({ apiKey: keyToUse });
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: promptContext
-        });
-        return response.text || '';
-      }, candidateKey);
+      const { text, modelUsed, keyUsed, failoverCount, latencyMs } = await apiKeyPool.generateContentWithCascade(
+        { contents: promptContext },
+        { preferredKey: candidateKey }
+      );
 
-      llmTime = (performance.now() - llmStart).toFixed(1);
-      rawLLMResponse = result;
+      llmTime = String(latencyMs);
+      rawLLMResponse = text;
       const maskedKey = apiKeyPool.maskKey(keyUsed);
       engineUsed = failoverCount > 0
-        ? `Google Gemini 2.5 Flash (Auto-failover to ${maskedKey})`
-        : `Google Gemini 2.5 Flash (${maskedKey})`;
+        ? `Google ${modelUsed} (Auto-failover to ${maskedKey})`
+        : `Google ${modelUsed} (${maskedKey})`;
       
-      console.log(`%c✅ Gemini API responded in ${llmTime}ms using key ${maskedKey} (Failovers: ${failoverCount})`, 'color: #4ade80; font-weight: bold;');
+      console.log(`%c✅ Gemini API (${modelUsed}) responded in ${llmTime}ms using key ${maskedKey} (Failovers: ${failoverCount})`, 'color: #4ade80; font-weight: bold;');
       console.group('%c📨 RAW GEMINI API RESPONSE:', 'color: #4ade80; font-weight: bold;');
       console.log(rawLLMResponse);
       console.groupEnd();
@@ -542,9 +539,9 @@ export async function answerQuestion(
 }
 
 /**
- * Construct system prompt with strict grounded context instruction and Markdown table formatting rules
+ * Construct dynamic system prompt with Claude/ChatGPT response principles
  */
-function constructPrompt(query: string, results: SearchResult[]): string {
+function constructPrompt(query: string, results: SearchResult[], history?: ChatMessage[]): string {
   const allStoredChunks = vectorStore.getAllChunks();
   const studentDocNames = new Set(
     allStoredChunks
@@ -558,44 +555,45 @@ function constructPrompt(query: string, results: SearchResult[]): string {
   if (results.length === 0) {
     return `SYSTEM INSTRUCTION:
 There are currently ${totalStudentsInDB} students indexed across ${totalChunksInDB} chunks in the database, but no matching context was retrieved for query "${query}".
-Answer politely stating the database size (${totalStudentsInDB} students enrolled) and ask the user to specify a student name.`;
+Answer politely stating that no matching record was found in the database for "${query}".`;
   }
 
   const contextBlocks = results
-    .map((res, i) => `[Source ${i + 1}: ${res.chunk.docName} | Page ${res.chunk.pageNumber}]\n${res.chunk.content}`)
+    .map((res, i) => `[Context Window ${i + 1}: ${res.chunk.docName} | Page ${res.chunk.pageNumber}]\n${res.chunk.content}`)
     .join('\n\n---\n\n');
 
-  return `SYSTEM INSTRUCTION:
-You are an intelligent Assistant answering questions strictly based on the user's uploaded school documents.
-Use ONLY the provided context and database metadata below. Do not invent information outside the text.
+  let historyContext = '';
+  if (history && history.length > 0) {
+    historyContext = `RECENT CONVERSATION HISTORY:\n${history.slice(-4).map(m => `${m.sender === 'user' ? 'User' : 'Assistant'}: ${m.text.substring(0, 300)}`).join('\n')}\n\n`;
+  }
 
-GLOBAL DATABASE CONTEXT & AUDIT METRICS:
-- Total Enrolled Students in System: ${totalStudentsInDB} students
-- Total Knowledge Documents: ${totalDocsInDB} documents
-- Total Vector Embeddings in Vector Store: ${totalChunksInDB} chunks
-- Retrieved Context Windows Below: Top ${results.length} highest similarity matches for this query
+  return `You are an elite, highly intelligent Knowledge Assistant. Your goal is to provide responses with the analytical depth, precision, conversational naturalness, and elegance of Claude 3.5 Sonnet and ChatGPT-4o.
 
-CRITICAL PRODUCTION GROUNDING & ANTI-HALLUCINATION RULES:
-1. STRICT ENTITY FIDELITY:
-   - If the user asks about a specific person, student, or topic (e.g. "${query}") who is NOT explicitly documented in the CONTEXT DOCUMENTS below, you MUST state clearly:
-     "❌ Student record not found in the database for this query. Please check the spelling or ask 'List all students' to view all 50 enrolled students."
-   - Under NO circumstances should you output data, marks, or profile details for a different student!
-2. ACCURATE AGGREGATE STATS:
-   - If the user asks how many students exist in the database (or asks for count / total / directory), state accurately that there are ${totalStudentsInDB} students enrolled in the school database (indexed across ${totalChunksInDB} vector chunks). DO NOT claim there are only ${results.length} students, because the retrieved chunks below are merely the top search matches!
-3. FORMATTING REQUIREMENTS:
-   - When presenting a verified student found in the context, format with a 2-sentence GENERATIVE EXECUTIVE SUMMARY followed by clean MARKDOWN TABLES:
-     - **Student Profile Overview Table** (| Attribute | Details |)
-     - **Examination Marks Table** (| Subject | Marks | Grade |)
-     - **Guardian & Contact Details Table** (| Relationship | Name | Phone / Address |)
-   - Keep tables well-formatted and easy to read. Avoid long walls of text.
-
-CONTEXT DOCUMENTS:
+GROUNDED RETRIEVED CONTEXT:
+==================================================
 ${contextBlocks}
+==================================================
 
-USER QUESTION:
-${query}
+${historyContext}USER QUESTION:
+"${query}"
 
-ANSWER (Formatted with Executive Summary and Markdown Tables):`;
+RESPONSE PRINCIPLES:
+1. DIRECT INTENT ADDRESSING:
+   - Provide a direct, articulate, and insightful answer in the opening lines.
+   - Match the structure to the user's intent:
+     * Specific fact/score inquiry: Give the exact metric with brief analytical context. Do not dump irrelevant personal or guardian data.
+     * Advice or performance evaluation: Synthesize strengths, areas for improvement, and teacher remarks into actionable, empathetic guidance.
+     * Comparison: Present a side-by-side comparative analysis highlighting relative differences and a clean comparison table.
+     * General overview/profile: Provide a high-level executive summary and structured key tables.
+     * Document question: Synthesize main takeaways, definitions, and citations cleanly.
+2. STRICT GROUNDING & ACCURACY:
+   - Rely strictly on the numbers, facts, and statements in the GROUNDED RETRIEVED CONTEXT.
+   - Do not invent names, subjects, marks, or external facts.
+3. ELEGANT FORMATTING:
+   - Use clean Markdown with bolded metrics, structured bullet points, and tables where comparative data benefits from tabular presentation.
+   - Avoid robotic filler phrases like "Based on the provided context...". Speak directly and authoritatively.
+
+ANSWER:`;
 }
 
 /**
@@ -655,7 +653,7 @@ function fallbackSynthesizeAnswer(
   verifiedStudent?: StudentProfile
 ): string {
   if (verifiedStudent) {
-    return formatStudentProfileFromEntity(verifiedStudent);
+    return generateLocalDynamicStudentAnswer(query, [verifiedStudent]);
   }
 
   if (results.length === 0) {

@@ -64,13 +64,15 @@ export class PostgresService {
 
   private getPool(): Pool {
     if (!this.pool) {
+      const isRemote = this.config.host !== 'localhost' && this.config.host !== '127.0.0.1';
       const poolConfig: PoolConfig = {
         host: this.config.host,
         port: this.config.port,
         database: this.config.database,
         user: this.config.user,
         password: this.config.password || undefined,
-        connectionTimeoutMillis: 3000,
+        connectionTimeoutMillis: 8000,
+        ssl: isRemote ? { rejectUnauthorized: false } : undefined,
         max: 10
       };
       this.pool = new Pool(poolConfig);

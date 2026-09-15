@@ -16,8 +16,13 @@ export async function generateEmbedding(text: string, apiKey?: string): Promise<
   console.log('%cInput text (first 200 chars):', 'color: #94a3b8;', text.substring(0, 200) + (text.length > 200 ? '...' : ''));
   console.log('%cText length:', 'color: #94a3b8;', text.length, 'chars');
   
-  const candidateKey = (apiKey && apiKey.trim().length > 5) ? apiKey : apiKeyPool.getActiveKey();
-  console.log('%cAPI key provided:', 'color: #94a3b8;', !!(candidateKey && candidateKey.trim().length > 5));
+  let candidateKey = (apiKey && apiKey.trim().length > 5) ? apiKey : apiKeyPool.getActiveKey();
+  if (candidateKey && candidateKey.startsWith('gsk_')) {
+    // Groq keys don't support Google GenAI embedContent. Pick first Gemini key from the pool.
+    const geminiKey = apiKeyPool.getKeys().find(k => !k.startsWith('gsk_'));
+    candidateKey = geminiKey || '';
+  }
+  console.log('%cGemini embedding key provided:', 'color: #94a3b8;', !!(candidateKey && candidateKey.trim().length > 5));
 
   if (candidateKey && candidateKey.trim().length > 5 && remoteEmbeddingSupported !== false) {
     const modelsToTry = ['text-embedding-004', 'embedding-001'];

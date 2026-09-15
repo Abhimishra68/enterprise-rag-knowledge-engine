@@ -1,4 +1,4 @@
-import { SearchResult, PipelineStageInfo } from '../../types/rag';
+import { SearchResult, PipelineStageInfo, ChatMessage } from '../../types/rag';
 import { handleStudentDatabaseQuery, isStudentQuery } from '../school/studentQueryService';
 import { handleDocumentRAGQuery } from './documentRAGService';
 import { optimizeQueryWithGemini } from './promptOptimizer';
@@ -26,17 +26,18 @@ export async function routeAndAnswerQuery(
   domain: QueryDomain = 'auto',
   apiKey?: string,
   topK: number = 4,
-  hybridAlpha: number = 0.7
+  hybridAlpha: number = 0.7,
+  history?: ChatMessage[]
 ): Promise<RoutedAnswerResponse> {
-  // Step 0: Use Gemini to reformulate and optimize prompt into RAG-understandable format
-  const optimization = await optimizeQueryWithGemini(rawQuery, apiKey);
+  // Step 0: Use Gemini to reformulate and optimize prompt into RAG-understandable format with history
+  const optimization = await optimizeQueryWithGemini(rawQuery, apiKey, history);
   const query = optimization.optimizedQuery;
 
   let response: RoutedAnswerResponse;
 
   // 1. Explicit Student Domain
   if (domain === 'student') {
-    const studentRes = await handleStudentDatabaseQuery(query, apiKey, rawQuery);
+    const studentRes = await handleStudentDatabaseQuery(query, apiKey, rawQuery, history);
     response = {
       ...studentRes,
       domainUsed: 'student',
@@ -44,7 +45,7 @@ export async function routeAndAnswerQuery(
     };
   } else if (domain === 'document') {
     // 2. Explicit Document Domain
-    const docRes = await handleDocumentRAGQuery(query, apiKey, topK, hybridAlpha);
+    const docRes = await handleDocumentRAGQuery(query, apiKey, topK, hybridAlpha, history);
     response = {
       ...docRes,
       domainUsed: 'document',
@@ -55,14 +56,14 @@ export async function routeAndAnswerQuery(
     const isSchoolTopic = isStudentQuery(query) || isStudentQuery(rawQuery);
 
     if (isSchoolTopic) {
-      const studentRes = await handleStudentDatabaseQuery(query, apiKey, rawQuery);
+      const studentRes = await handleStudentDatabaseQuery(query, apiKey, rawQuery, history);
       response = {
         ...studentRes,
         domainUsed: 'student',
         detectedIntent: 'Auto-Routed to Student Database'
       };
     } else {
-      const docRes = await handleDocumentRAGQuery(query, apiKey, topK, hybridAlpha);
+      const docRes = await handleDocumentRAGQuery(query, apiKey, topK, hybridAlpha, history);
       response = {
         ...docRes,
         domainUsed: 'document',
