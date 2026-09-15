@@ -222,6 +222,8 @@ export const App: React.FC = () => {
                 onDocumentAdded={handleDocumentAdded}
                 onDocumentDeleted={handleDocumentDeleted}
                 onLoadSchoolDb={() => setIsDbModalOpen(true)}
+                onLoadSampleDocs={handleLoadSamples}
+                onSelectPrompt={(prompt) => handleSendMessage(prompt)}
                 apiKey={settings.geminiApiKey}
                 chunkSize={settings.chunkSize}
                 chunkOverlap={settings.chunkOverlap}
@@ -239,6 +241,7 @@ export const App: React.FC = () => {
                   setActivePipelineInfo(info);
                   setActiveTab('inspector');
                 }}
+                onClearChat={() => setMessages([])}
                 hasDocuments={uploadedDocs.length > 0}
                 activeDomain={activeDomain}
                 onDomainChange={setActiveDomain}
